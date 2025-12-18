@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head th:fragment="head(title)">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title th:text="${title} + ' | StellarisMedia'">StellarisMedia</title>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    
+    <!-- Boxicons -->
+    <link href="https://unpkg.com/boxicons@2.1.4/css/boxicons.min.css" rel="stylesheet">
+    
+    <!-- HTMX -->
+    <script src="/webjars/htmx.org/1.9.10/dist/htmx.min.js"></script>
+    
+    <!-- Custom Styles -->
+    <link rel="stylesheet" th:href="@{/css/stellaris.css}">
+</head>
+<body>
+    <!-- Navigation Bar Fragment -->
+    <nav th:fragment="navbar" class="navbar glass">
+        <div class="navbar-brand">
+            <a href="/" class="brand-link">
+                <i class='bx bxs-planet brand-icon'></i>
+                <span class="brand-text">StellarisMedia</span>
+            </a>
+        </div>
+        <div class="navbar-actions">
+            <button class="btn btn-icon" id="themeToggle" onclick="toggleTheme()">
+                <i class='bx bx-moon'></i>
+            </button>
+        </div>
+    </nav>
+
+    <!-- Breadcrumb Fragment -->
+    <nav th:fragment="breadcrumb(breadcrumbs, library)" class="breadcrumb glass">
+        <a th:href="@{/}" class="breadcrumb-item">
+            <i class='bx bx-home'></i>
+        </a>
+        <th:block th:each="crumb : ${breadcrumbs}">
+            <span class="breadcrumb-separator"><i class='bx bx-chevron-right'></i></span>
+            <a th:if="${!crumb.current}" 
+               th:href="@{/browse/{lib}/{path}(lib=${library}, path=${crumb.path})}"
+               th:text="${crumb.name}"
+               class="breadcrumb-item"></a>
+            <span th:if="${crumb.current}" th:text="${crumb.name}" class="breadcrumb-item current"></span>
+        </th:block>
+    </nav>
+
+    <!-- File Item Card Fragment -->
+    <div th:fragment="fileCard(item, library)" class="file-card glass" 
+         th:classappend="${item.directory} ? 'folder' : 'file'"
+         th:data-path="${item.path}"
+         th:data-type="${item.fileType}">
+        
+        <div class="file-card-preview">
+            <!-- Folder -->
+            <th:block th:if="${item.directory}">
+                <i class='bx' th:classappend="${item.icon}"></i>
+            </th:block>
+            
+            <!-- Image -->
+            <th:block th:if="${item.image}">
+                <img th:src="@{/preview/image/{lib}/{path}(lib=${library}, path=${item.path}, w=150, h=150)}" 
+                     alt="" loading="lazy" class="file-thumb">
+            </th:block>
+            
+            <!-- Video -->
+            <th:block th:if="${item.video}">
+                <img th:src="@{/thumbnail/video/{lib}/{path}(lib=${library}, path=${item.path})}" 
+                     alt="" loading="lazy" class="file-thumb"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                <div class="file-icon-fallback" style="display:none;">
+                    <i class='bx bx-film'></i>
+                </div>
+                <span class="video-badge"><i class='bx bx-play'></i></span>
+            </th:block>
+            
+            <!-- Audio -->
+            <th:block th:if="${item.audio}">
+                <i class='bx bx-music'></i>
+                <span class="audio-wave"></span>
+            </th:block>
+            
+            <!-- Other files -->
+            <th:block th:if="${!item.directory && !item.image && !item.video && !item.audio}">
+                <i class='bx' th:classappend="${item.icon}"></i>
+            </th:block>
+        </div>
+        
+        <div class="file-card-info">
+            <span class="file-name" th:text="${item.name}" th:title="${item.name}"></span>
+            <span class="file-meta">
+                <span th:if="${item.directory}" th:text="${item.itemCount} + ' items'"></span>
+                <span th:if="${!item.directory}" th:text="${item.sizeFormatted}"></span>
+            </span>
+        </div>
+        
+        <!-- Context menu trigger -->
+        <button class="file-card-menu" onclick="showContextMenu(event, this)">
+            <i class='bx bx-dots-vertical-rounded'></i>
+        </button>
+        
+        <!-- Click behavior -->
+        <a th:if="${item.directory}" 
+           th:href="@{/browse/{lib}/{path}(lib=${library}, path=${item.path})}"
+           class="file-card-link"></a>
+        <a th:if="${item.video}" 
+           th:href="@{/player/{lib}/{path}(lib=${library}, path=${item.path})}"
+           class="file-card-link"></a>
+        <a th:if="${item.audio}" 
+           th:href="@{/player/{lib}/{path}(lib=${library}, path=${item.path})}"
+           class="file-card-link"></a>
+        <a th:if="${item.image}" 
+           th:href="@{/gallery/{lib}/{path}(lib=${library}, path=${item.path})}"
+           class="file-card-link"></a>
+        <a th:if="${!item.directory && !item.video && !item.audio && !item.image}" 
+           th:href="@{/download/{lib}/{path}(lib=${library}, path=${item.path})}"
+           class="file-card-link"></a>
+    </div>
+
+    <!-- Scripts Fragment -->
+    <script th:fragment="scripts">
+        // Theme toggle
+        function toggleTheme() {
+            document.body.classList.toggle('light-theme');
+            const icon = document.querySelector('#themeToggle i');
+            icon.classList.toggle('bx-moon');
+            icon.classList.toggle('bx-sun');
+            localStorage.setItem('theme', document.body.classList.contains('light-theme') ? 'light' : 'dark');
+        }
+        
+        // Load saved theme
+        if (localStorage.getItem('theme') === 'light') {
+            document.body.classList.add('light-theme');
+            document.querySelector('#themeToggle i').classList.replace('bx-moon', 'bx-sun');
+        }
+    </script>
+</body>
+</html>

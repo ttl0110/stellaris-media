@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+
+<head th:replace="~{layout :: head('Home')}"></head>
+
+<body>
+    <!-- Navbar -->
+    <nav th:replace="~{layout :: navbar}"></nav>
+
+    <!-- Library Grid -->
+    <main class="library-grid">
+        <div th:each="lib : ${libraries}" class="library-card glass">
+            <i class='bx library-card-icon' th:classappend="${lib.icon}"></i>
+            <span class="library-card-name" th:text="${lib.name}">Library Name</span>
+            <a th:href="@{/browse/{name}(name=${lib.name})}" class="library-card-link"></a>
+        </div>
+
+        <!-- Empty state if no libraries -->
+        <div th:if="${#lists.isEmpty(libraries)}" class="empty-state" style="grid-column: 1 / -1;">
+            <i class='bx bx-folder-open empty-state-icon'></i>
+            <h3 class="empty-state-title">No Libraries Configured</h3>
+            <p class="empty-state-text">Add media library paths in application.yml</p>
+        </div>
+    </main>
+
+    <!-- Scripts -->
+    <script th:replace="~{layout :: scripts}"></script>
+</body>
+
+</html>

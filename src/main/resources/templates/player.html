@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+
+<head th:replace="~{layout :: head(${file.name} + ' - Player')}"></head>
+
+<body>
+    <!-- Player Container -->
+    <div class="player-container" id="playerContainer">
+        <!-- Header (shows on hover) -->
+        <div class="player-header glass">
+            <div style="display: flex; align-items: center; gap: 1rem;">
+                <a th:href="@{/browse/{lib}/{path}(lib=${library}, path=${file.path.contains('/') ? file.path.substring(0, file.path.lastIndexOf('/')) : ''})}"
+                    class="btn btn-icon" title="Back">
+                    <i class='bx bx-arrow-back'></i>
+                </a>
+                <span class="player-title" th:text="${file.name}">Video Title</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.5rem;">
+                <a th:href="@{/download/{lib}/{path}(lib=${library}, path=${file.path})}" class="btn btn-icon"
+                    title="Download">
+                    <i class='bx bx-download'></i>
+                </a>
+            </div>
+        </div>
+
+        <!-- Video/Audio Player -->
+        <th:block th:if="${file.video}">
+            <video id="mediaPlayer" class="player-video" controls autoplay
+                th:poster="@{/thumbnail/video/{lib}/{path}(lib=${library}, path=${file.path})}">
+                <source th:src="${streamUrl}" th:type="${file.mimeType}">
+                <!-- Subtitle Track -->
+                <track kind="subtitles" th:src="${subtitleUrl}" srclang="en" label="Subtitles" default>
+                Your browser does not support the video tag.
+            </video>
+        </th:block>
+
+        <th:block th:if="${file.audio}">
+            <div
+                style="flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 2rem;">
+                <!-- Audio visualization placeholder -->
+                <div class="audio-cover glass"
+                    style="width: 300px; height: 300px; border-radius: 1.5rem; display: flex; align-items: center; justify-content: center; margin-bottom: 2rem;">
+                    <i class='bx bx-music' style="font-size: 6rem; color: var(--accent-primary);"></i>
+                </div>
+                <h2 style="color: white; margin-bottom: 2rem;" th:text="${file.name}">Audio Title</h2>
+                <audio id="mediaPlayer" controls autoplay style="width: 100%; max-width: 600px;">
+                    <source th:src="${streamUrl}" th:type="${file.mimeType}">
+                    Your browser does not support the audio tag.
+                </audio>
+            </div>
+        </th:block>
+    </div>
+
+    <!-- Scripts -->
+    <script th:inline="javascript">
+        const player = document.getElementById('mediaPlayer');
+        const container = document.getElementById('playerContainer');
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            switch (e.key) {
+                case ' ':
+                case 'k':
+                    e.preventDefault();
+                    player.paused ? player.play() : player.pause();
+                    break;
+                case 'ArrowLeft':
+                    e.preventDefault();
+                    player.currentTime = Math.max(0, player.currentTime - 10);
+                    break;
+                case 'ArrowRight':
+                    e.preventDefault();
+                    player.currentTime = Math.min(player.duration, player.currentTime + 10);
+                    break;
+                case 'ArrowUp':
+                    e.preventDefault();
+                    player.volume = Math.min(1, player.volume + 0.1);
+                    break;
+                case 'ArrowDown':
+                    e.preventDefault();
+                    player.volume = Math.max(0, player.volume - 0.1);
+                    break;
+                case 'f':
+                    e.preventDefault();
+                    if (document.fullscreenElement) {
+                        document.exitFullscreen();
+                    } else {
+                        container.requestFullscreen();
+                    }
+                    break;
+                case 'm':
+                    e.preventDefault();
+                    player.muted = !player.muted;
+                    break;
+                case 'Escape':
+                    window.history.back();
+                    break;
+            }
+        });
+
+        // Double-click to fullscreen
+        player.addEventListener('dblclick', () => {
+            if (document.fullscreenElement) {
+                document.exitFullscreen();
+            } else {
+                container.requestFullscreen();
+            }
+        });
+
+        // Remember playback position
+        const videoPath = /*[[${file.path}]]*/ '';
+        const storageKey = `playback_${videoPath}`;
+
+        // Restore position
+        const savedTime = localStorage.getItem(storageKey);
+        if (savedTime && parseFloat(savedTime) > 10) {
+            player.currentTime = parseFloat(savedTime);
+        }
+
+        // Save position periodically
+        player.addEventListener('timeupdate', () => {
+            if (player.currentTime > 10) {
+                localStorage.setItem(storageKey, player.currentTime.toString());
+            }
+        });
+
+        // Clear saved position when finished
+        player.addEventListener('ended', () => {
+            localStorage.removeItem(storageKey);
+        });
+    </script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: #000;
+            overflow: hidden;
+        }
+    </style>
+</body>
+
+</html>

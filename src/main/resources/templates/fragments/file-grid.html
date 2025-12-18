@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+
+<body>
+    <!-- File Grid Fragment (for HTMX partial updates) -->
+    <div th:fragment="fileGrid" id="fileContainer" th:class="${currentView == 'grid'} ? 'file-grid' : 'file-list'">
+        <!-- Empty state -->
+        <div th:if="${#lists.isEmpty(result.items)}" class="empty-state" style="grid-column: 1 / -1;">
+            <i class='bx bx-folder-open empty-state-icon'></i>
+            <h3 class="empty-state-title">This folder is empty</h3>
+            <p class="empty-state-text">Upload files or create a new folder</p>
+        </div>
+
+        <!-- File cards -->
+        <th:block th:each="item : ${result.items}">
+            <div th:replace="~{layout :: fileCard(${item}, ${library})}"></div>
+        </th:block>
+    </div>
+</body>
+
+</html>

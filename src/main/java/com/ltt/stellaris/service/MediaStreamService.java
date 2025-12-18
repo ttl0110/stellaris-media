@@ -1,0 +1,458 @@
+package com.ltt.stellaris.service;
+
+import com.ltt.stellaris.config.StellarisProperties;
+import com.ltt.stellaris.util.MimeTypeUtils;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import net.coobird.thumbnailator.Thumbnails;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.stereotype.Service;
+
+import jakarta.annotation.PostConstruct;
+import java.io.*;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.security.MessageDigest;
+import java.util.HexFormat;
+import java.util.Optional;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Service for media streaming and thumbnail generation
+ */
+@Slf4j
+@Service
+@RequiredArgsConstructor
+public class MediaStreamService {
+
+    private final StellarisProperties properties;
+    private final FileService fileService;
+
+    private Path thumbnailCachePath;
+
+    @PostConstruct
+    public void init() {
+        String cachePath = properties.getThumbnail().getCachePath();
+        if (cachePath != null) {
+            thumbnailCachePath = Paths.get(cachePath.replace("${user.home}", System.getProperty("user.home")));
+            try {
+                Files.createDirectories(thumbnailCachePath);
+                log.info("Thumbnail cache directory: {}", thumbnailCachePath);
+            } catch (IOException e) {
+                log.error("Failed to create thumbnail cache directory", e);
+            }
+        }
+    }
+
+    /**
+     * Stream a video or audio file with range support
+     * Properly handles HTTP Range requests for seeking and mobile browser
+     * compatibility
+     */
+    public ResponseEntity<Resource> streamMedia(String libraryName, String relativePath, String rangeHeader) {
+        try {
+            Path filePath = fileService.getFilePath(libraryName, relativePath);
+            long fileSize = Files.size(filePath);
+            String mimeType = MimeTypeUtils.getMimeType(filePath);
+
+            // No range header - return full file with Accept-Ranges header
+            if (rangeHeader == null || rangeHeader.isEmpty()) {
+                Resource resource = new FileSystemResource(filePath);
+                return ResponseEntity.ok()
+                        .header(HttpHeaders.CONTENT_TYPE, mimeType)
+                        .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                        .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(fileSize))
+                        .body(resource);
+            }
+
+            // Parse range header: "bytes=start-end" or "bytes=start-" or "bytes=-suffix"
+            long start = 0;
+            long end = fileSize - 1;
+
+            String rangeSpec = rangeHeader.replace("bytes=", "").trim();
+
+            // Handle multiple ranges (take only first one for simplicity)
+            if (rangeSpec.contains(",")) {
+                rangeSpec = rangeSpec.split(",")[0].trim();
+            }
+
+            if (rangeSpec.startsWith("-")) {
+                // Suffix range: "-500" means last 500 bytes
+                long suffixLength = Long.parseLong(rangeSpec.substring(1));
+                start = Math.max(0, fileSize - suffixLength);
+                end = fileSize - 1;
+            } else if (rangeSpec.endsWith("-")) {
+                // Open-ended range: "500-" means from byte 500 to end
+                start = Long.parseLong(rangeSpec.substring(0, rangeSpec.length() - 1));
+                end = fileSize - 1;
+            } else if (rangeSpec.contains("-")) {
+                // Full range: "500-999"
+                String[] parts = rangeSpec.split("-");
+                start = Long.parseLong(parts[0]);
+                if (parts.length > 1 && !parts[1].isEmpty()) {
+                    end = Long.parseLong(parts[1]);
+                }
+            }
+
+            // Validate range
+            if (start < 0 || start > end || start >= fileSize) {
+                return ResponseEntity.status(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                        .header(HttpHeaders.CONTENT_RANGE, "bytes */" + fileSize)
+                        .build();
+            }
+
+            // Clamp end to file size
+            if (end >= fileSize) {
+                end = fileSize - 1;
+            }
+
+            long contentLength = end - start + 1;
+            String contentRange = String.format("bytes %d-%d/%d", start, end, fileSize);
+
+            log.debug("Streaming {}: range={}-{}, length={}, total={}",
+                    relativePath, start, end, contentLength, fileSize);
+
+            Resource resource = new SeekableResource(filePath, start, contentLength);
+
+            return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT)
+                    .header(HttpHeaders.CONTENT_TYPE, mimeType)
+                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                    .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength))
+                    .header(HttpHeaders.CONTENT_RANGE, contentRange)
+                    // Add cache headers for better mobile performance
+                    .header(HttpHeaders.CACHE_CONTROL, "no-cache")
+                    .body(resource);
+
+        } catch (NumberFormatException e) {
+            log.warn("Invalid range header format: {}", rangeHeader);
+            return ResponseEntity.badRequest().build();
+        } catch (Exception e) {
+            log.error("Error streaming media: {}", relativePath, e);
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * Get image preview (resized thumbnail)
+     */
+    public ResponseEntity<Resource> getImagePreview(String libraryName, String relativePath, int maxWidth,
+            int maxHeight) {
+        try {
+            Path imagePath = fileService.getFilePath(libraryName, relativePath);
+
+            // For small images, return original
+            if (maxWidth <= 0 && maxHeight <= 0) {
+                return ResponseEntity.ok()
+                        .header(HttpHeaders.CONTENT_TYPE, MimeTypeUtils.getMimeType(imagePath))
+                        .body(new FileSystemResource(imagePath));
+            }
+
+            // Check if thumbnail exists in cache
+            String cacheKey = generateCacheKey(imagePath.toString(), maxWidth, maxHeight);
+            Path cachedThumbnail = thumbnailCachePath.resolve(cacheKey + ".jpg");
+
+            if (!Files.exists(cachedThumbnail)) {
+                // Generate thumbnail
+                Files.createDirectories(cachedThumbnail.getParent());
+                Thumbnails.of(imagePath.toFile())
+                        .size(maxWidth > 0 ? maxWidth : 300, maxHeight > 0 ? maxHeight : 300)
+                        .outputFormat("jpg")
+                        .outputQuality(0.8)
+                        .toFile(cachedThumbnail.toFile());
+                log.debug("Generated thumbnail: {}", cachedThumbnail);
+            }
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_TYPE, "image/jpeg")
+                    .header(HttpHeaders.CACHE_CONTROL, "max-age=86400")
+                    .body(new FileSystemResource(cachedThumbnail));
+
+        } catch (Exception e) {
+            log.error("Error generating image preview: {}", relativePath, e);
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * Get video thumbnail using FFmpeg
+     */
+    public ResponseEntity<Resource> getVideoThumbnail(String libraryName, String relativePath) {
+        if (!properties.getThumbnail().isVideoThumbnailEnabled()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        try {
+            Path videoPath = fileService.getFilePath(libraryName, relativePath);
+
+            // Check cache
+            String cacheKey = generateCacheKey(videoPath.toString(), 320, 180);
+            Path cachedThumbnail = thumbnailCachePath.resolve("video").resolve(cacheKey + ".jpg");
+
+            if (!Files.exists(cachedThumbnail)) {
+                Files.createDirectories(cachedThumbnail.getParent());
+
+                // Use FFmpeg to extract frame at 10% of video duration
+                String ffmpegPath = properties.getThumbnail().getFfmpegPath();
+                ProcessBuilder pb = new ProcessBuilder(
+                        ffmpegPath,
+                        "-i", videoPath.toString(),
+                        "-ss", "00:00:05", // Seek to 5 seconds
+                        "-vframes", "1",
+                        "-vf", "scale=320:-1",
+                        "-y",
+                        cachedThumbnail.toString());
+                pb.redirectErrorStream(true);
+
+                Process process = pb.start();
+                // Read output to prevent blocking
+                try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                    while (reader.readLine() != null) {
+                        // Consume output
+                    }
+                }
+
+                boolean completed = process.waitFor(30, TimeUnit.SECONDS);
+                if (!completed) {
+                    process.destroyForcibly();
+                    log.warn("FFmpeg timeout for: {}", videoPath);
+                    return ResponseEntity.notFound().build();
+                }
+
+                if (!Files.exists(cachedThumbnail)) {
+                    log.warn("FFmpeg failed to generate thumbnail for: {}", videoPath);
+                    return ResponseEntity.notFound().build();
+                }
+
+                log.debug("Generated video thumbnail: {}", cachedThumbnail);
+            }
+
+            return ResponseEntity.ok()
+                    .header(HttpHeaders.CONTENT_TYPE, "image/jpeg")
+                    .header(HttpHeaders.CACHE_CONTROL, "max-age=86400")
+                    .body(new FileSystemResource(cachedThumbnail));
+
+        } catch (Exception e) {
+            log.error("Error generating video thumbnail: {}", relativePath, e);
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * Get subtitle file for a video
+     */
+    public ResponseEntity<Resource> getSubtitle(String libraryName, String videoPath) {
+        Optional<Path> subtitlePath = fileService.findSubtitle(libraryName, videoPath);
+
+        if (subtitlePath.isEmpty()) {
+            return ResponseEntity.notFound().build();
+        }
+
+        Path path = subtitlePath.get();
+        String mimeType = MimeTypeUtils.getMimeType(path);
+
+        // Convert SRT to VTT if needed (browsers prefer VTT)
+        if (path.toString().toLowerCase().endsWith(".srt")) {
+            try {
+                String vttContent = convertSrtToVtt(Files.readString(path));
+                return ResponseEntity.ok()
+                        .header(HttpHeaders.CONTENT_TYPE, "text/vtt")
+                        .body(new ByteArrayResource(vttContent.getBytes()));
+            } catch (IOException e) {
+                log.error("Error converting SRT to VTT", e);
+            }
+        }
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_TYPE, mimeType)
+                .body(new FileSystemResource(path));
+    }
+
+    /**
+     * Generate cache key for thumbnails
+     */
+    private String generateCacheKey(String path, int width, int height) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("MD5");
+            String input = path + "_" + width + "_" + height;
+            byte[] hash = md.digest(input.getBytes());
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            // Fallback to simple hash
+            return String.valueOf((path + "_" + width + "_" + height).hashCode());
+        }
+    }
+
+    /**
+     * Convert SRT subtitle format to WebVTT
+     */
+    private String convertSrtToVtt(String srtContent) {
+        StringBuilder vtt = new StringBuilder("WEBVTT\n\n");
+
+        // Simple conversion: replace comma with dot in timestamps
+        String[] blocks = srtContent.split("\n\n");
+        for (String block : blocks) {
+            String[] lines = block.split("\n");
+            if (lines.length >= 3) {
+                // Skip sequence number, keep timestamp and text
+                String timestamp = lines[1].replace(",", ".");
+                StringBuilder text = new StringBuilder();
+                for (int i = 2; i < lines.length; i++) {
+                    text.append(lines[i]).append("\n");
+                }
+                vtt.append(timestamp).append("\n").append(text).append("\n");
+            }
+        }
+
+        return vtt.toString();
+    }
+
+    /**
+     * Seekable Resource implementation using RandomAccessFile for reliable large
+     * file support.
+     * This is critical for files > 4GB and proper seeking on mobile browsers.
+     */
+    private static class SeekableResource implements Resource {
+        private final Path path;
+        private final long start;
+        private final long length;
+
+        public SeekableResource(Path path, long start, long length) {
+            this.path = path;
+            this.start = start;
+            this.length = length;
+        }
+
+        @Override
+        public InputStream getInputStream() throws IOException {
+            return new SeekableInputStream(path.toFile(), start, length);
+        }
+
+        @Override
+        public long contentLength() {
+            return length;
+        }
+
+        @Override
+        public boolean exists() {
+            return Files.exists(path);
+        }
+
+        @Override
+        public boolean isReadable() {
+            return Files.isReadable(path);
+        }
+
+        @Override
+        public boolean isOpen() {
+            return false;
+        }
+
+        @Override
+        public java.net.URL getURL() throws IOException {
+            return path.toUri().toURL();
+        }
+
+        @Override
+        public java.net.URI getURI() throws IOException {
+            return path.toUri();
+        }
+
+        @Override
+        public File getFile() throws IOException {
+            return path.toFile();
+        }
+
+        @Override
+        public org.springframework.core.io.Resource createRelative(String relativePath) throws IOException {
+            return new FileSystemResource(path.resolveSibling(relativePath));
+        }
+
+        @Override
+        public String getFilename() {
+            return path.getFileName().toString();
+        }
+
+        @Override
+        public String getDescription() {
+            return "SeekableResource [" + path + "]";
+        }
+
+        @Override
+        public long lastModified() throws IOException {
+            return Files.getLastModifiedTime(path).toMillis();
+        }
+    }
+
+    /**
+     * InputStream backed by RandomAccessFile for reliable seeking in large files.
+     * Unlike InputStream.skip(), RandomAccessFile.seek() is guaranteed to position
+     * correctly.
+     */
+    private static class SeekableInputStream extends InputStream {
+        private final RandomAccessFile raf;
+        private long remaining;
+
+        public SeekableInputStream(File file, long start, long length) throws IOException {
+            this.raf = new RandomAccessFile(file, "r");
+            this.raf.seek(start); // RandomAccessFile.seek is reliable for any file size
+            this.remaining = length;
+        }
+
+        @Override
+        public int read() throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int result = raf.read();
+            if (result != -1) {
+                remaining--;
+            }
+            return result;
+        }
+
+        @Override
+        public int read(byte[] b, int off, int len) throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int toRead = (int) Math.min(len, remaining);
+            int result = raf.read(b, off, toRead);
+            if (result != -1) {
+                remaining -= result;
+            }
+            return result;
+        }
+
+        @Override
+        public int available() throws IOException {
+            return (int) Math.min(remaining, Integer.MAX_VALUE);
+        }
+
+        @Override
+        public void close() throws IOException {
+            raf.close();
+        }
+
+        @Override
+        public long skip(long n) throws IOException {
+            long toSkip = Math.min(n, remaining);
+            raf.seek(raf.getFilePointer() + toSkip);
+            remaining -= toSkip;
+            return toSkip;
+        }
+    }
+
+    /**
+     * ByteArrayResource for in-memory content
+     */
+    private static class ByteArrayResource extends org.springframework.core.io.ByteArrayResource {
+        public ByteArrayResource(byte[] byteArray) {
+            super(byteArray);
+        }
+    }
+}

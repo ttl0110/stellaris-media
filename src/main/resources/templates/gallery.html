@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+
+<head th:replace="~{layout :: head(${file.name} + ' - Gallery')}"></head>
+
+<body>
+    <!-- Gallery Container -->
+    <div class="gallery-container" id="galleryContainer">
+        <!-- Close button -->
+        <button class="gallery-nav gallery-close" onclick="goBack()" title="Close (Esc)">
+            <i class='bx bx-x'></i>
+        </button>
+
+        <!-- Image -->
+        <img th:src="${imageUrl}" th:alt="${file.name}" class="gallery-image" id="galleryImage">
+
+        <!-- Info overlay -->
+        <div class="gallery-info glass"
+            style="position: absolute; bottom: 2rem; left: 50%; transform: translateX(-50%); padding: 0.75rem 1.5rem; border-radius: 1rem; display: flex; align-items: center; gap: 1rem;">
+            <span th:text="${file.name}" style="color: white;"></span>
+            <span style="color: var(--text-muted);" th:text="${file.sizeFormatted}"></span>
+            <a th:href="${originalUrl}" class="btn btn-icon" title="Download Original"
+                style="width: 32px; height: 32px;">
+                <i class='bx bx-download'></i>
+            </a>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script>
+        const image = document.getElementById('galleryImage');
+        let scale = 1;
+
+        function goBack() {
+            window.history.back();
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            switch (e.key) {
+                case 'Escape':
+                    goBack();
+                    break;
+                case '+':
+                case '=':
+                    e.preventDefault();
+                    scale = Math.min(3, scale + 0.25);
+                    image.style.transform = `scale(${scale})`;
+                    break;
+                case '-':
+                    e.preventDefault();
+                    scale = Math.max(0.5, scale - 0.25);
+                    image.style.transform = `scale(${scale})`;
+                    break;
+                case '0':
+                    e.preventDefault();
+                    scale = 1;
+                    image.style.transform = `scale(1)`;
+                    break;
+            }
+        });
+
+        // Mouse wheel zoom
+        image.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            if (e.deltaY < 0) {
+                scale = Math.min(3, scale + 0.1);
+            } else {
+                scale = Math.max(0.5, scale - 0.1);
+            }
+            image.style.transform = `scale(${scale})`;
+        });
+
+        // Click outside image to close
+        document.getElementById('galleryContainer').addEventListener('click', (e) => {
+            if (e.target === e.currentTarget) {
+                goBack();
+            }
+        });
+    </script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+
+        .gallery-image {
+            transition: transform 0.2s ease;
+            cursor: zoom-in;
+        }
+    </style>
+</body>
+
+</html>

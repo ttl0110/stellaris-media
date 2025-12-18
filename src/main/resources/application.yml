@@ -1,0 +1,62 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: StellarisMedia
+  
+  # Thymeleaf Configuration
+  thymeleaf:
+    cache: false
+    prefix: classpath:/templates/
+    suffix: .html
+  
+  # Database Configuration (SQLite)
+  datasource:
+    url: jdbc:sqlite:${user.home}/.stellaris/stellaris.db
+    driver-class-name: org.sqlite.JDBC
+  
+  jpa:
+    database-platform: org.hibernate.community.dialect.SQLiteDialect
+    hibernate:
+      ddl-auto: update
+    show-sql: false
+  
+  # File Upload Configuration
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 10GB
+      max-request-size: 10GB
+      file-size-threshold: 2MB
+
+# Application Configuration
+stellaris:
+  # Media library paths - add your own paths here
+  libraries:
+    - name: Videos
+      path: E:/Videos
+      icon: bx-film
+    - name: Music
+      path: E:/Music
+      icon: bx-music
+    - name: Documents
+      path: D:/Documents
+      icon: bx-file
+  
+  # Thumbnail settings
+  thumbnail:
+    enabled: true
+    cache-path: ${user.home}/.stellaris/thumbnails
+    video-thumbnail-enabled: true
+    # Path to FFmpeg executable (required for video thumbnails)
+    ffmpeg-path: ffmpeg
+  
+  # UI Settings
+  ui:
+    items-per-page: 50
+    default-view: grid
+
+logging:
+  level:
+    com.ltt.stellaris: DEBUG
