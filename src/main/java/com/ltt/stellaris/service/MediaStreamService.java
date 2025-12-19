@@ -57,7 +57,9 @@ public class MediaStreamService {
      */
     public void streamMediaDirect(String libraryName, String relativePath, String rangeHeader,
             jakarta.servlet.http.HttpServletResponse response) {
-        final int BUFFER_SIZE = 64 * 1024; // 64KB write buffer
+        final int BUFFER_SIZE = 256 * 1024; // 256KB write buffer
+        final int FLUSH_INTERVAL = 1024 * 1024; // Flush every 1MB
+        final long MAX_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB max chunk for HDD
 
         try {
             Path filePath = fileService.getFilePath(libraryName, relativePath);
@@ -66,6 +68,7 @@ public class MediaStreamService {
 
             long start = 0;
             long end = fileSize - 1;
+            boolean openEndedRange = false;
 
             // Parse range header
             if (rangeHeader != null && !rangeHeader.isEmpty()) {
@@ -80,6 +83,9 @@ public class MediaStreamService {
                     start = Math.max(0, fileSize - suffixLength);
                 } else if (rangeSpec.endsWith("-")) {
                     start = Long.parseLong(rangeSpec.substring(0, rangeSpec.length() - 1));
+                    openEndedRange = true;
+                    // Limit chunk size for HDD optimization
+                    end = Math.min(start + MAX_CHUNK_SIZE - 1, fileSize - 1);
                 } else if (rangeSpec.contains("-")) {
                     String[] parts = rangeSpec.split("-");
                     start = Long.parseLong(parts[0]);
@@ -103,8 +109,8 @@ public class MediaStreamService {
             long contentLength = end - start + 1;
             String contentRange = String.format("bytes %d-%d/%d", start, end, fileSize);
 
-            log.debug("Direct streaming {}: range={}-{}, length={}, total={}",
-                    relativePath, start, end, contentLength, fileSize);
+            log.debug("Direct streaming {}: range={}-{}, length={}, total={}, openEnded={}",
+                    relativePath, start, end, contentLength, fileSize, openEndedRange);
 
             // Set response headers
             response.setStatus(rangeHeader != null ? HttpStatus.PARTIAL_CONTENT.value() : HttpStatus.OK.value());
@@ -123,6 +129,7 @@ public class MediaStreamService {
                 raf.seek(start);
                 byte[] buffer = new byte[BUFFER_SIZE];
                 long remaining = contentLength;
+                long bytesSinceFlush = 0;
 
                 while (remaining > 0) {
                     int toRead = (int) Math.min(buffer.length, remaining);
@@ -131,11 +138,22 @@ public class MediaStreamService {
                         break;
                     }
                     out.write(buffer, 0, bytesRead);
-                    out.flush(); // Flush each chunk for immediate delivery
                     remaining -= bytesRead;
+                    bytesSinceFlush += bytesRead;
+
+                    // Flush less frequently - every 1MB
+                    if (bytesSinceFlush >= FLUSH_INTERVAL) {
+                        out.flush();
+                        bytesSinceFlush = 0;
+                    }
                 }
+                // Final flush
+                out.flush();
             }
 
+        } catch (org.apache.catalina.connector.ClientAbortException e) {
+            // Client closed connection - this is normal for video seeking
+            log.debug("Client aborted streaming: {}", relativePath);
         } catch (NumberFormatException e) {
             log.warn("Invalid range header format: {}", rangeHeader);
             response.setStatus(HttpStatus.BAD_REQUEST.value());
