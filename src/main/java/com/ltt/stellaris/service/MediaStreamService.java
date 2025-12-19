@@ -52,9 +52,12 @@ public class MediaStreamService {
     /**
      * Stream a video or audio file with range support
      * Properly handles HTTP Range requests for seeking and mobile browser
-     * compatibility
+     * compatibility. Uses chunked responses for HDD optimization.
      */
     public ResponseEntity<Resource> streamMedia(String libraryName, String relativePath, String rangeHeader) {
+        // Max chunk size - 5MB chunks for better HDD streaming
+        final long MAX_CHUNK_SIZE = 5 * 1024 * 1024;
+
         try {
             Path filePath = fileService.getFilePath(libraryName, relativePath);
             long fileSize = Files.size(filePath);
@@ -73,6 +76,7 @@ public class MediaStreamService {
             // Parse range header: "bytes=start-end" or "bytes=start-" or "bytes=-suffix"
             long start = 0;
             long end = fileSize - 1;
+            boolean openEndedRange = false;
 
             String rangeSpec = rangeHeader.replace("bytes=", "").trim();
 
@@ -89,7 +93,9 @@ public class MediaStreamService {
             } else if (rangeSpec.endsWith("-")) {
                 // Open-ended range: "500-" means from byte 500 to end
                 start = Long.parseLong(rangeSpec.substring(0, rangeSpec.length() - 1));
-                end = fileSize - 1;
+                openEndedRange = true;
+                // For HDD optimization: limit initial chunk size
+                end = Math.min(start + MAX_CHUNK_SIZE - 1, fileSize - 1);
             } else if (rangeSpec.contains("-")) {
                 // Full range: "500-999"
                 String[] parts = rangeSpec.split("-");
@@ -114,10 +120,12 @@ public class MediaStreamService {
             long contentLength = end - start + 1;
             String contentRange = String.format("bytes %d-%d/%d", start, end, fileSize);
 
-            log.debug("Streaming {}: range={}-{}, length={}, total={}",
-                    relativePath, start, end, contentLength, fileSize);
+            log.debug("Streaming {}: range={}-{}, length={}, total={}, openEnded={}",
+                    relativePath, start, end, contentLength, fileSize, openEndedRange);
 
-            Resource resource = new SeekableResource(filePath, start, contentLength);
+            // Use InputStreamResource for proper streaming
+            InputStream inputStream = new SeekableInputStream(filePath.toFile(), start, contentLength);
+            Resource resource = new org.springframework.core.io.InputStreamResource(inputStream);
 
             return ResponseEntity.status(HttpStatus.PARTIAL_CONTENT)
                     .header(HttpHeaders.CONTENT_TYPE, mimeType)
@@ -312,90 +320,13 @@ public class MediaStreamService {
     }
 
     /**
-     * Seekable Resource implementation using RandomAccessFile for reliable large
-     * file support.
-     * This is critical for files > 4GB and proper seeking on mobile browsers.
-     */
-    private static class SeekableResource implements Resource {
-        private final Path path;
-        private final long start;
-        private final long length;
-
-        public SeekableResource(Path path, long start, long length) {
-            this.path = path;
-            this.start = start;
-            this.length = length;
-        }
-
-        @Override
-        public InputStream getInputStream() throws IOException {
-            return new SeekableInputStream(path.toFile(), start, length);
-        }
-
-        @Override
-        public long contentLength() {
-            return length;
-        }
-
-        @Override
-        public boolean exists() {
-            return Files.exists(path);
-        }
-
-        @Override
-        public boolean isReadable() {
-            return Files.isReadable(path);
-        }
-
-        @Override
-        public boolean isOpen() {
-            return false;
-        }
-
-        @Override
-        public java.net.URL getURL() throws IOException {
-            return path.toUri().toURL();
-        }
-
-        @Override
-        public java.net.URI getURI() throws IOException {
-            return path.toUri();
-        }
-
-        @Override
-        public File getFile() throws IOException {
-            return path.toFile();
-        }
-
-        @Override
-        public org.springframework.core.io.Resource createRelative(String relativePath) throws IOException {
-            return new FileSystemResource(path.resolveSibling(relativePath));
-        }
-
-        @Override
-        public String getFilename() {
-            return path.getFileName().toString();
-        }
-
-        @Override
-        public String getDescription() {
-            return "SeekableResource [" + path + "]";
-        }
-
-        @Override
-        public long lastModified() throws IOException {
-            return Files.getLastModifiedTime(path).toMillis();
-        }
-    }
-
-    /**
      * InputStream backed by RandomAccessFile for reliable seeking in large files.
      * Uses internal buffering for better HDD performance.
      * Unlike InputStream.skip(), RandomAccessFile.seek() is guaranteed to position
      * correctly.
      */
     private static class SeekableInputStream extends InputStream {
-        private static final int BUFFER_SIZE = 64 * 1024; // 64KB buffer for HDD optimization
+        private static final int BUFFER_SIZE = 1024 * 1024; // 1MB buffer for HDD optimization
 
         private final RandomAccessFile raf;
         private long remaining;
