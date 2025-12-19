@@ -390,47 +390,83 @@ public class MediaStreamService {
 
     /**
      * InputStream backed by RandomAccessFile for reliable seeking in large files.
+     * Uses internal buffering for better HDD performance.
      * Unlike InputStream.skip(), RandomAccessFile.seek() is guaranteed to position
      * correctly.
      */
     private static class SeekableInputStream extends InputStream {
+        private static final int BUFFER_SIZE = 64 * 1024; // 64KB buffer for HDD optimization
+
         private final RandomAccessFile raf;
         private long remaining;
+        private final byte[] buffer;
+        private int bufferPos;
+        private int bufferLimit;
 
         public SeekableInputStream(File file, long start, long length) throws IOException {
             this.raf = new RandomAccessFile(file, "r");
             this.raf.seek(start); // RandomAccessFile.seek is reliable for any file size
             this.remaining = length;
+            this.buffer = new byte[BUFFER_SIZE];
+            this.bufferPos = 0;
+            this.bufferLimit = 0;
+        }
+
+        private int fillBuffer() throws IOException {
+            if (remaining <= 0) {
+                return -1;
+            }
+            int toRead = (int) Math.min(BUFFER_SIZE, remaining);
+            int bytesRead = raf.read(buffer, 0, toRead);
+            if (bytesRead > 0) {
+                bufferPos = 0;
+                bufferLimit = bytesRead;
+            }
+            return bytesRead;
         }
 
         @Override
         public int read() throws IOException {
-            if (remaining <= 0) {
-                return -1;
+            if (bufferPos >= bufferLimit) {
+                if (fillBuffer() <= 0) {
+                    return -1;
+                }
             }
-            int result = raf.read();
-            if (result != -1) {
-                remaining--;
-            }
-            return result;
+            remaining--;
+            return buffer[bufferPos++] & 0xFF;
         }
 
         @Override
         public int read(byte[] b, int off, int len) throws IOException {
-            if (remaining <= 0) {
+            if (remaining <= 0 && bufferPos >= bufferLimit) {
                 return -1;
             }
-            int toRead = (int) Math.min(len, remaining);
-            int result = raf.read(b, off, toRead);
-            if (result != -1) {
-                remaining -= result;
+
+            int totalRead = 0;
+            while (len > 0 && (bufferPos < bufferLimit || remaining > 0)) {
+                // Refill buffer if empty
+                if (bufferPos >= bufferLimit) {
+                    if (fillBuffer() <= 0) {
+                        break;
+                    }
+                }
+
+                // Copy from buffer
+                int available = bufferLimit - bufferPos;
+                int toCopy = Math.min(len, available);
+                System.arraycopy(buffer, bufferPos, b, off, toCopy);
+                bufferPos += toCopy;
+                off += toCopy;
+                len -= toCopy;
+                totalRead += toCopy;
             }
-            return result;
+
+            return totalRead > 0 ? totalRead : -1;
         }
 
         @Override
         public int available() throws IOException {
-            return (int) Math.min(remaining, Integer.MAX_VALUE);
+            return (int) Math.min(remaining + (bufferLimit - bufferPos), Integer.MAX_VALUE);
         }
 
         @Override
@@ -440,9 +476,24 @@ public class MediaStreamService {
 
         @Override
         public long skip(long n) throws IOException {
-            long toSkip = Math.min(n, remaining);
-            raf.seek(raf.getFilePointer() + toSkip);
-            remaining -= toSkip;
+            long toSkip = Math.min(n, remaining + (bufferLimit - bufferPos));
+
+            // First, skip from buffer
+            int bufferAvailable = bufferLimit - bufferPos;
+            if (toSkip <= bufferAvailable) {
+                bufferPos += (int) toSkip;
+                return toSkip;
+            }
+
+            // Skip remaining buffer and seek in file
+            long skippedFromBuffer = bufferAvailable;
+            long remainingToSkip = toSkip - skippedFromBuffer;
+
+            raf.seek(raf.getFilePointer() + remainingToSkip);
+            remaining -= remainingToSkip;
+            bufferPos = 0;
+            bufferLimit = 0;
+
             return toSkip;
         }
     }
