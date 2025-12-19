@@ -50,7 +50,104 @@ public class MediaStreamService {
     }
 
     /**
-     * Stream a video or audio file with range support
+     * Stream a video or audio file with range support using direct response
+     * writing.
+     * This method writes directly to HttpServletResponse for better HDD
+     * performance.
+     */
+    public void streamMediaDirect(String libraryName, String relativePath, String rangeHeader,
+            jakarta.servlet.http.HttpServletResponse response) {
+        final int BUFFER_SIZE = 64 * 1024; // 64KB write buffer
+
+        try {
+            Path filePath = fileService.getFilePath(libraryName, relativePath);
+            long fileSize = Files.size(filePath);
+            String mimeType = MimeTypeUtils.getMimeType(filePath);
+
+            long start = 0;
+            long end = fileSize - 1;
+
+            // Parse range header
+            if (rangeHeader != null && !rangeHeader.isEmpty()) {
+                String rangeSpec = rangeHeader.replace("bytes=", "").trim();
+
+                if (rangeSpec.contains(",")) {
+                    rangeSpec = rangeSpec.split(",")[0].trim();
+                }
+
+                if (rangeSpec.startsWith("-")) {
+                    long suffixLength = Long.parseLong(rangeSpec.substring(1));
+                    start = Math.max(0, fileSize - suffixLength);
+                } else if (rangeSpec.endsWith("-")) {
+                    start = Long.parseLong(rangeSpec.substring(0, rangeSpec.length() - 1));
+                } else if (rangeSpec.contains("-")) {
+                    String[] parts = rangeSpec.split("-");
+                    start = Long.parseLong(parts[0]);
+                    if (parts.length > 1 && !parts[1].isEmpty()) {
+                        end = Long.parseLong(parts[1]);
+                    }
+                }
+            }
+
+            // Validate range
+            if (start < 0 || start > end || start >= fileSize) {
+                response.setStatus(HttpStatus.REQUESTED_RANGE_NOT_SATISFIABLE.value());
+                response.setHeader(HttpHeaders.CONTENT_RANGE, "bytes */" + fileSize);
+                return;
+            }
+
+            if (end >= fileSize) {
+                end = fileSize - 1;
+            }
+
+            long contentLength = end - start + 1;
+            String contentRange = String.format("bytes %d-%d/%d", start, end, fileSize);
+
+            log.debug("Direct streaming {}: range={}-{}, length={}, total={}",
+                    relativePath, start, end, contentLength, fileSize);
+
+            // Set response headers
+            response.setStatus(rangeHeader != null ? HttpStatus.PARTIAL_CONTENT.value() : HttpStatus.OK.value());
+            response.setContentType(mimeType);
+            response.setHeader(HttpHeaders.ACCEPT_RANGES, "bytes");
+            response.setHeader(HttpHeaders.CONTENT_LENGTH, String.valueOf(contentLength));
+            if (rangeHeader != null) {
+                response.setHeader(HttpHeaders.CONTENT_RANGE, contentRange);
+            }
+            response.setHeader(HttpHeaders.CACHE_CONTROL, "no-cache");
+
+            // Stream directly to response
+            try (RandomAccessFile raf = new RandomAccessFile(filePath.toFile(), "r");
+                    OutputStream out = response.getOutputStream()) {
+
+                raf.seek(start);
+                byte[] buffer = new byte[BUFFER_SIZE];
+                long remaining = contentLength;
+
+                while (remaining > 0) {
+                    int toRead = (int) Math.min(buffer.length, remaining);
+                    int bytesRead = raf.read(buffer, 0, toRead);
+                    if (bytesRead == -1) {
+                        break;
+                    }
+                    out.write(buffer, 0, bytesRead);
+                    out.flush(); // Flush each chunk for immediate delivery
+                    remaining -= bytesRead;
+                }
+            }
+
+        } catch (NumberFormatException e) {
+            log.warn("Invalid range header format: {}", rangeHeader);
+            response.setStatus(HttpStatus.BAD_REQUEST.value());
+        } catch (Exception e) {
+            log.error("Error streaming media: {}", relativePath, e);
+            response.setStatus(HttpStatus.NOT_FOUND.value());
+        }
+    }
+
+    /**
+     * Stream a video or audio file with range support (legacy Resource-based
+     * method)
      * Properly handles HTTP Range requests for seeking and mobile browser
      * compatibility. Uses chunked responses for HDD optimization.
      */

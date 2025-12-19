@@ -24,16 +24,17 @@ public class StreamController {
     private final FileService fileService;
 
     /**
-     * Stream video or audio
+     * Stream video or audio using direct response writing for HDD optimization
      */
     @GetMapping("/stream/{library}/**")
-    public ResponseEntity<Resource> stream(
+    public void stream(
             @PathVariable("library") String library,
             @RequestHeader(value = "Range", required = false) String rangeHeader,
-            HttpServletRequest request) {
+            HttpServletRequest request,
+            jakarta.servlet.http.HttpServletResponse response) {
 
         String relativePath = extractPath(request, "/stream/" + library);
-        return mediaStreamService.streamMedia(library, relativePath, rangeHeader);
+        mediaStreamService.streamMediaDirect(library, relativePath, rangeHeader, response);
     }
 
     /**
